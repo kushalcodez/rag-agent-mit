@@ -1,33 +1,18 @@
 import ollama
 import chromadb
+from chromadb.utils import embedding_functions
 from pathlib import Path
 
 # ============================================
-# 1. EMBEDDING FUNCTION (FIXED AGAIN)
-# ============================================
-class OllamaEmbeddings:
-    def __init__(self, model_name="mxbai-embed-large"):
-        self.model_name = model_name
-    
-    def name(self):
-        """Required by ChromaDB - must be a callable method"""
-        return self.model_name
-    
-    def __call__(self, input):
-        if isinstance(input, str):
-            input = [input]
-        embeddings = []
-        for text in input:
-            response = ollama.embeddings(model=self.model_name, prompt=text)
-            embeddings.append(response['embedding'])
-        return embeddings
-
-
-# ============================================
-# 2. INITIALIZE DATABASE
+# 1. INITIALIZE DATABASE
 # ============================================
 persistent_client = chromadb.PersistentClient(path="./chroma_db")
-embedding_function = OllamaEmbeddings()
+
+# Use ChromaDB's built-in Ollama embedding function
+embedding_function = embedding_functions.OllamaEmbeddingFunction(
+    model_name="mxbai-embed-large",
+    url="http://localhost:11434"
+)
 
 collection = persistent_client.get_or_create_collection(
     name="my_rag_collection",
@@ -37,7 +22,7 @@ collection = persistent_client.get_or_create_collection(
 
 
 # ============================================
-# 3. UTILITY FUNCTIONS
+# 2. UTILITY FUNCTIONS
 # ============================================
 def chunk_text(text, chunk_size=500, overlap=50):
     """Split text into overlapping chunks for better retrieval"""
@@ -85,25 +70,26 @@ def add_documents(docs, use_chunking=False):
 
 def rag_query(query, n_results=3, verbose=False):
     """Query the RAG system"""
-    # Retrieve relevant documents
-    results = collection.query(
-        query_texts=[query],
-        n_results=n_results
-    )
-    
-    retrieved_docs = results['documents'][0]
-    
-    if verbose:
-        print(f"\n📚 Retrieved {len(retrieved_docs)} relevant documents")
-        for i, doc in enumerate(retrieved_docs, 1):
-            print(f"\n--- Source {i} ---")
-            print(doc[:200] + "..." if len(doc) > 200 else doc)
-    
-    # Build context
-    context = "\n\n".join(retrieved_docs)
-    
-    # Create prompt
-    prompt = f"""Based on the following context, answer the question. If the context doesn't contain enough information, say so.
+    try:
+        print("\n🔍 Searching database...")
+        results = collection.query(
+            query_texts=[query],
+            n_results=n_results
+        )
+        
+        retrieved_docs = results['documents'][0]
+        
+        if verbose:
+            print(f"\n📚 Retrieved {len(retrieved_docs)} relevant documents")
+            for i, doc in enumerate(retrieved_docs, 1):
+                print(f"\n--- Source {i} ---")
+                print(doc[:200] + "..." if len(doc) > 200 else doc)
+        
+        # Build context
+        context = "\n\n".join(retrieved_docs)
+        
+        # Create prompt
+        prompt = f"""Based on the following context, answer the question. If the context doesn't contain enough information, say so.
 
 Context:
 {context}
@@ -111,18 +97,25 @@ Context:
 Question: {query}
 
 Answer:"""
-    
-    # Generate response
-    print("\n🤔 Generating response...")
-    response = ollama.generate(
-        model='llama3.2',
-        prompt=prompt
-    )
-    
-    return {
-        'answer': response['response'],
-        'sources': retrieved_docs
-    }
+        
+        # Generate response
+        print("🤔 Generating response...")
+        response = ollama.generate(
+            model='llama3.2',
+            prompt=prompt
+        )
+        
+        return {
+            'answer': response['response'],
+            'sources': retrieved_docs
+        }
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        return {
+            'answer': f"Error occurred: {e}",
+            'sources': []
+        }
 
 
 def show_stats():
@@ -133,8 +126,28 @@ def show_stats():
     print(f"   Collection name: {collection.name}")
 
 
+def list_all_documents(limit=None):
+    """List all documents in the database"""
+    try:
+        results = collection.get(limit=limit, include=['documents'])
+        docs = results['documents']
+        ids = results['ids']
+        
+        print(f"\n📚 Documents in Database ({len(docs)} total):")
+        print("=" * 50)
+        
+        for i, (doc_id, doc) in enumerate(zip(ids, docs), 1):
+            print(f"\n[{i}] ID: {doc_id}")
+            preview = doc[:200] + "..." if len(doc) > 200 else doc
+            print(f"Content: {preview}")
+            print("-" * 50)
+            
+    except Exception as e:
+        print(f"Error listing documents: {e}")
+
+
 # ============================================
-# 4. MAIN PROGRAM
+# 3. MAIN PROGRAM
 # ============================================
 if __name__ == "__main__":
     print("=" * 50)
@@ -166,6 +179,7 @@ if __name__ == "__main__":
     print("  - Type your question to query the system")
     print("  - 'add' - Add new documents")
     print("  - 'load' - Load documents from directory")
+    print("  - 'list' - List all documents")
     print("  - 'stats' - Show database statistics")
     print("  - 'quit' - Exit the program")
     
@@ -179,6 +193,11 @@ if __name__ == "__main__":
         
         elif user_input.lower() == 'stats':
             show_stats()
+        
+        elif user_input.lower() == 'list':
+            limit = input("How many documents to show? (press Enter for all): ").strip()
+            limit = int(limit) if limit else None
+            list_all_documents(limit)
         
         elif user_input.lower() == 'add':
             print("\nEnter documents (one per line, empty line to finish):")
